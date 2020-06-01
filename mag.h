@@ -12,14 +12,37 @@
 #include "tlibs2/mat.h"
 
 
+// default optimisation flags
+#ifndef MX_IS_HERM
+	#define MX_IS_HERM 1
+#endif
+#ifndef MXX_IS_DIAG
+	#define MXX_IS_DIAG 1
+#endif
+#ifndef INTERACTMAT_IS_HERM
+	// warning: setting this to "1" leads to false low-q eigenvectors!
+	#define INTERACTMAT_IS_HERM 0
+#endif
+
+
+#if !defined(__TL2_STRCONV0) && !defined(__TL2_STRCONV)
+	#define __TL2_STRCONV0(__DEF) #__DEF
+	#define __TL2_STRCONV(__DEF) __TL2_STRCONV0(__DEF)
+#endif
+
+#pragma message("MX_IS_HERM: " __TL2_STRCONV(MX_IS_HERM))
+#pragma message("MXX_IS_DIAG: " __TL2_STRCONV(MXX_IS_DIAG))
+#pragma message("INTERACTMAT_IS_HERM: " __TL2_STRCONV(INTERACTMAT_IS_HERM))
+
+
 namespace tl2 {
 
 /**
  * Calculates energies and dynamical structure factors from Landau-Lifshitz (M x) and fluctuation matrices.
  * Uses the mathematical formalism by M. Garst et al., references:
- *	- https://doi.org/10.1088/1361-6463/aa7573
- *  - https://doi.org/10.1038/nmat4223 (supplement)
- *  - https://kups.ub.uni-koeln.de/7937/
+ * - https://doi.org/10.1088/1361-6463/aa7573
+ * - https://doi.org/10.1038/nmat4223 (supplement)
+ * - https://kups.ub.uni-koeln.de/7937/
  */
 template<class t_mat_cplx, class t_vec_cplx, class t_cplx, class t_real>
 std::tuple<std::vector<t_cplx>, std::vector<t_vec_cplx>, std::vector<t_mat_cplx>>
@@ -33,27 +56,32 @@ calc_dynstrucfact_landau(const t_mat_cplx& Mx, const t_mat_cplx& Fluc,
 	std::vector<t_vec_cplx> Mxevecs;
 	std::vector<t_cplx> Mxevals;
 	{
+#if MX_IS_HERM == 1
 		std::vector<t_real> _Mxevals;
-		//if(!eigenvec_cplx<t_real>(Mx, Mxevecs, Mxevals, true))
 		if(!eigenvecsel_herm<t_real>(-imag*Mx, Mxevecs, _Mxevals, true, -1., -2., eps))
 			throw std::runtime_error("Mx eigenvector determination failed!");
-		for(t_real d : _Mxevals) Mxevals.emplace_back(t_cplx(0., d));
-
+		for(t_real d : _Mxevals)
+			Mxevals.emplace_back(t_cplx(0., d));
+#else
+		if(!eigenvec_cplx<t_real>(Mx, Mxevecs, Mxevals, true))
+			throw std::runtime_error("Mx eigenvector determination failed!");
+#endif
 
 		// filter eigenvalues
-		auto maxelem = std::max_element(_Mxevals.begin(), _Mxevals.end(),
-			[](t_real x, t_real y) -> bool { return std::abs(x) < std::abs(y); });
+		auto maxelem = std::max_element(Mxevals.begin(), Mxevals.end(),
+			[](const t_cplx& x, const t_cplx& y) -> bool
+			{ return std::abs(x.imag()) < std::abs(y.imag()); });
 
 		std::vector<t_vec_cplx> Mxevecs_new;
 		std::vector<t_cplx> Mxevals_new;
 
-		for(std::size_t elem=0; elem<_Mxevals.size(); ++elem)
+		for(std::size_t elem=0; elem<Mxevals.size(); ++elem)
 		{
 			// upper eigenvalue limit
-			if(maxeval && std::abs(_Mxevals[elem]) < std::abs(*maxelem)**maxeval)
+			if(maxeval && std::abs(Mxevals[elem].imag()) < std::abs(*maxelem)**maxeval)
 				continue;
 			// lower eigenvalue limit
-			if(mineval && std::abs(_Mxevals[elem]) < *mineval)
+			if(mineval && std::abs(Mxevals[elem].imag()) < *mineval)
 				continue;
 			Mxevecs_new.push_back(Mxevecs[elem]);
 			Mxevals_new.push_back(Mxevals[elem]);
@@ -80,9 +108,12 @@ calc_dynstrucfact_landau(const t_mat_cplx& Mx, const t_mat_cplx& Fluc,
 
 	// transform Mx into Mx eigenvector system
 	// Mxx is diagonal with this construction => directly use Mxevals
-	//t_mat_cplx Mxx = prod_mm(Mx, MxEvecs);
-	//Mxx = prod_mm(MxEvecsH, Mxx);
+#if MXX_IS_DIAG == 1
 	t_mat_cplx Mxx = diag_matrix<t_mat_cplx>(Mxevals);
+#else
+	t_mat_cplx Mxx = prod_mm(Mx, MxEvecs);
+	Mxx = prod_mm(MxEvecsH, Mxx);
+#endif
 	Mxx *= imag / normfac;
 
 	// Landau-Lifshitz: d/dt dM = -Mx B_mean, B_mean = -chi^(-1) * dM
@@ -92,8 +123,16 @@ calc_dynstrucfact_landau(const t_mat_cplx& Mx, const t_mat_cplx& Fluc,
 	t_mat_cplx Interactmat = prod_mm(Mxx, invsuscept);
 	std::vector<t_vec_cplx> Interactevecs;
 	std::vector<t_cplx> Interactevals;
+#if INTERACTMAT_IS_HERM == 1
+	std::vector<t_real> _Interactevals;
+	if(!eigenvecsel_herm<t_real>(Interactmat, Interactevecs, _Interactevals, true, -1., -2., eps))
+		throw std::runtime_error("Mxx eigenvector determination failed!");
+	for(t_real d : _Interactevals)
+		Interactevals.emplace_back(t_cplx(d, 0.));
+#else
 	if(!eigenvec_cplx<t_real>(Interactmat, Interactevecs, Interactevals, true))
 		throw std::runtime_error("Mxx eigenvector determination failed!");
+#endif
 
 	std::vector<t_mat_cplx> Interactemats;
 	Interactemats.reserve(Interactevals.size());
