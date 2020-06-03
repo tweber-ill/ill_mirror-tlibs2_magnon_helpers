@@ -9,7 +9,7 @@
 #ifndef __TLIBS2_PHYS_MAG__
 #define __TLIBS2_PHYS_MAG__
 
-#include "tlibs2/mat.h"
+#include "tlibs2/math17.h"
 
 
 // default optimisation flags
